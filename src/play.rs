@@ -1,11 +1,4 @@
-use std::{
-    cmp::Ordering,
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    thread,
-    time::{Duration, Instant},
-    vec,
-};
+use std::{collections::HashMap, time::Instant, vec};
 
 use iced::{
     multi_window::Application,
@@ -17,8 +10,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    util::{self, get_str_value},
-    Message, SilkPlayer, PLAY_LIST_SCROLLABLE_ID,
+    util::{self, get_str_value}, Message, SilkPlayer, Tab, PLAY_LIST_SCROLLABLE_ID
 };
 
 #[derive(Default, PartialEq, Serialize, Deserialize)]
@@ -71,6 +63,20 @@ pub enum SongControl {
     PlayOrPause,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Tag {
+    pub name: String,
+    pub path: String,
+}
+impl Tag {
+    pub fn new(name: &str, path: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            path: path.to_string(),
+        }
+    }
+}
+
 #[allow(unused)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MusicInfo {
@@ -85,6 +91,7 @@ pub struct MusicInfo {
     pub file_name: String,
     pub path: String,
     pub lyric: Vec<ShowLyric>,
+    pub tags: Vec<Tag>,
 }
 impl Default for MusicInfo {
     fn default() -> Self {
@@ -100,6 +107,7 @@ impl Default for MusicInfo {
             path: Default::default(),
             lyric: Default::default(),
             fmt: Default::default(),
+            tags: Default::default(),
         }
     }
 }
@@ -126,6 +134,17 @@ impl MusicInfo {
 
                 let lyric = ShowLyric::build(&tag);
 
+                let mut tags = vec![];
+                let path_ = std::path::Path::new(path);
+                if let Some(path_) = path_.parent() {
+                    if let Some(file_name) = path_.file_name() {
+                        tags.push(Tag::new(
+                            &file_name.to_string_lossy(),
+                            &path_.to_string_lossy(),
+                        ))
+                    }
+                }
+
                 MusicInfo {
                     title,
                     artist,
@@ -138,6 +157,7 @@ impl MusicInfo {
                     path: path.to_string(),
                     lyric,
                     fmt: MusicFormat::from(tag.fmt()),
+                    tags,
                 }
             }
         }
@@ -283,67 +303,11 @@ impl SilkPlayer {
             return;
         }
 
-        let mut file_list = vec![];
-        util::log("app launch.beg init");
-        if let Ok(_) = util::get_files(&self.setting.monitor, &mut file_list) {
-            let file_len = file_list.len();
-            util::log(format!("local file len={}", file_len));
-            // 用多线程来处理，加快初始化速度
-            let task_num = 8;
-            let batch_list = util::batch_list(&file_list, task_num);
-
-            let var_name: Vec<MusicInfo> = Vec::new();
-            let counter = Arc::new(Mutex::new(var_name));
-            // let mut handles = Vec::new();
-            for index in 0..task_num {
-                let counter = Arc::clone(&counter);
-                let task = batch_list[index].clone();
-                let _ = thread::spawn(move || {
-                    // let mut a = vec![];
-                    for path in task {
-                        let music_info = MusicInfo::new(&path);
-                        // a.push(music_info);
-                        counter.lock().unwrap().push(music_info);
-                    }
-                });
-            }
-            {
-                let counter = Arc::clone(&counter);
-                let _ = thread::spawn(move || loop {
-                    thread::sleep(Duration::from_millis(1000));
-                    let len = counter.lock().unwrap().len();
-                    if len == file_len {
-                        break;
-                    }
-                    util::log(format!("progress len = {len}"));
-                })
-                .join();
-            }
-
-            let mut list = counter.lock().unwrap().clone();
-            util::log(format!("final len={}", list.len()));
-            // for path in file_list {
-            //     self.file_list.push(MusicInfo::new(&path));
-            // }
-            list.sort_by(|a, b| -> Ordering {
-                if String::eq(&a.title, &b.title) {
-                    Ordering::Equal
-                } else if String::ge(&a.title, &b.title) {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                }
-            });
-            let mut final_list = Vec::with_capacity(file_len);
-            for item in list {
-                if !item.path.is_empty() {
-                    final_list.push(item);
-                }
-            }
-            self.music_list.init_list(final_list);
+        if let Ok(mut all_list) = self.music_list.all_list.try_lock() {
+            all_list.clear();
         }
 
-        util::log("app end init");
+        self.music_list.init_monitor(&self.setting.monitor);
 
         self.audio.pause();
     }
@@ -373,18 +337,32 @@ impl SilkPlayer {
     }
 
     pub fn change_play_list(&mut self, play_next: SongControl) -> Command<Message> {
+        let all_list_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            all_list.is_empty()
+        } else {
+            true
+        };
         let (filter, play) = match play_next {
             SongControl::PlayAll => {
-                let next = self.play_list.all_list.is_empty();
+                let next = all_list_empty;
                 let mut map = HashMap::new();
-                for music_info in &self.play_list.all_list {
-                    map.insert(music_info.path.to_string(), 1);
-                }
-                for music_info in &self.music_list.filter_list {
-                    if let None = map.get(&music_info.path) {
-                        self.play_list.all_list.push(music_info.clone());
+                if let Ok(mut all_list) = self.play_list.all_list.try_lock() {
+                    for music_info in all_list.iter() {
+                        map.insert(music_info.path.to_string(), 1);
+                    }
+                    let list = 
+                    if self.tab == Tab::LikeDetail {
+                        &self.get_list_by_tag()
+                    } else {
+                        &self.music_list.filter_list
+                    };
+                    for music_info in list {
+                        if let None = map.get(&music_info.path) {
+                            all_list.push(music_info.clone());
+                        }
                     }
                 }
+
                 if next {
                     self.next_song();
                 }
@@ -403,35 +381,59 @@ impl SilkPlayer {
                 (true, true)
             }
             SongControl::First(music_info) => {
-                let exist = self.play_list.all_list.contains(&music_info);
+                let exist = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                    all_list.contains(&music_info)
+                } else {
+                    false
+                };
                 if exist {
                     let _ = self.update(Message::SongControl(SongControl::List(music_info)));
                     (false, false)
                 } else {
-                    self.play_list.all_list.insert(0, music_info.clone());
+                    if let Ok(mut all_list) = self.play_list.all_list.try_lock() {
+                        all_list.insert(0, music_info.clone());
+                    }
                     self.current_song = music_info;
                     (true, true)
                 }
             }
             SongControl::Next(music_info) => {
-                let exist = self.play_list.all_list.contains(&music_info);
+                let exist = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                    all_list.contains(&music_info)
+                } else {
+                    false
+                };
                 if exist {
                     (false, false)
                 } else {
-                    let is_empty = self.play_list.all_list.is_empty();
+                    let is_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                        all_list.is_empty()
+                    } else {
+                        true
+                    };
                     let index = if is_empty { 0 } else { 1 };
-                    self.play_list.all_list.insert(index, music_info.clone());
+                    if let Ok(mut all_list) = self.play_list.all_list.try_lock() {
+                        all_list.insert(index, music_info.clone());
+                    }
                     self.current_song = music_info;
                     (true, is_empty)
                 }
             }
             SongControl::Last(music_info) => {
-                let exist = self.play_list.all_list.contains(&music_info);
+                let exist = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                    all_list.contains(&music_info)
+                } else {
+                    false
+                };
                 if exist {
                     (false, false)
                 } else {
-                    self.play_list.all_list.push(music_info.clone());
-                    if self.play_list.all_list.len() == 1 {
+                    let mut is_single = false;
+                    if let Ok(mut all_list) = self.play_list.all_list.try_lock() {
+                        all_list.push(music_info.clone());
+                        is_single = all_list.len() == 1;
+                    }
+                    if is_single {
                         self.current_song = music_info;
                         (true, true)
                     } else {
@@ -450,12 +452,16 @@ impl SilkPlayer {
             }
             SongControl::Remove(music_info) => {
                 let current = self.current_song.path == music_info.path;
-                for (index, item) in self.play_list.all_list.to_vec().iter().enumerate() {
-                    if item == &music_info {
-                        self.play_list.all_list.remove(index);
-                        break;
+
+                if let Ok(mut all_list) = self.play_list.all_list.try_lock() {
+                    for (index, item) in all_list.to_vec().iter().enumerate() {
+                        if item == &music_info {
+                            all_list.remove(index);
+                            break;
+                        }
                     }
                 }
+
                 if current {
                     // 当前播放被移出播放列表，则自动播放下一首
                     self.next_song();
@@ -482,14 +488,20 @@ impl SilkPlayer {
             }
             SongControl::RandomSelect => {
                 use ::rand::prelude::*;
-                let mut vec = self.music_list.all_list.to_vec();
+                let mut vec = if let Ok(all_list) = self.music_list.all_list.try_lock() {
+                    all_list.to_vec()
+                } else {
+                    vec![]
+                };
                 let len = vec.len();
                 if len > 0 {
                     let mut thread_rng = rand::thread_rng();
                     vec.shuffle(&mut thread_rng);
                     let size = if len > 50 { 50 } else { len };
-                    for item in &vec[0..size] {
-                        self.play_list.all_list.push(item.clone());
+                    if let Ok(mut all_list) = self.play_list.all_list.try_lock() {
+                        for item in &vec[0..size] {
+                            all_list.push(item.clone());
+                        }
                     }
                     self.current_song = vec[0].clone();
                     // util::log(format!("vec = {}", self.play_list.all_list.len()));
@@ -506,7 +518,12 @@ impl SilkPlayer {
         if filter {
             self.play_list.filter();
         }
-        if play || self.play_list.all_list.is_empty() {
+        let all_list_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            all_list.is_empty()
+        } else {
+            true
+        };
+        if play || all_list_empty {
             self.start_play();
         }
 
@@ -518,19 +535,32 @@ impl SilkPlayer {
             return;
         }
         let mut index = 0;
-        for item in &self.play_list.all_list {
-            if item.path == self.current_song.path {
-                break;
+
+        let mut all_list_len = 0;
+        if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            for item in all_list.iter() {
+                if item.path == self.current_song.path {
+                    break;
+                }
+                index += 1;
             }
-            index += 1;
+            all_list_len = all_list.len();
         }
-        index = (index + self.play_list.all_list.len() - 1) % self.play_list.all_list.len();
-        self.current_song = self.play_list.all_list[index].clone();
+
+        index = (index + all_list_len - 1) % all_list_len;
+        if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            self.current_song = all_list[index].clone();
+        }
         self.start_play();
     }
 
     pub fn next_song(&mut self) {
-        if self.play_list.all_list.is_empty() {
+        let all_list_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            all_list.is_empty()
+        } else {
+            true
+        };
+        if all_list_empty {
             return;
         }
 
@@ -557,18 +587,35 @@ impl SilkPlayer {
         match self.setting.play_mode {
             PlayMode::Single => {}
             PlayMode::Cycle => {
-                if let Some(item) =
-                    index_plus(self.current_song.path.to_string(), &self.play_list.all_list)
-                {
-                    self.current_song = item;
+                if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                    if let Some(item) = index_plus(self.current_song.path.to_string(), &all_list) {
+                        self.current_song = item;
+                    }
                 }
             }
             PlayMode::Random => {
                 let mut tmp: usize = rand::thread_rng().gen();
                 let mut loop_cnt = 0;
+
+                let all_list_len = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                    all_list.len()
+                } else {
+                    0
+                };
+
                 loop {
-                    let index = tmp % self.play_list.all_list.len();
-                    let music_info: &MusicInfo = &self.play_list.all_list[index];
+                    let index = tmp % all_list_len;
+
+                    let music_info = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                        Some(all_list[index].clone())
+                    } else {
+                        None
+                    };
+
+                    if music_info.is_none() {
+                        continue;
+                    }
+                    let music_info = music_info.unwrap();
                     // 随机到同一首就继续生成下一个随机
                     if music_info.path != self.current_song.path
                         && !self.app_control.history_list.contains(&music_info.path)
@@ -576,18 +623,20 @@ impl SilkPlayer {
                         self.current_song = music_info.clone();
                         break;
                     }
-                    
-                    if self.app_control.history_list.len() == self.play_list.all_list.len() {
+
+                    if self.app_control.history_list.len() == all_list_len {
                         self.app_control.history_list.clear();
                     }
 
                     tmp = rand::thread_rng().gen();
                     loop_cnt += 1;
                     if loop_cnt > 10 {
-                        if let Some(item) =
-                            index_plus(self.current_song.path.to_string(), &self.play_list.all_list)
-                        {
-                            self.current_song = item;
+                        if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                            if let Some(item) =
+                                index_plus(self.current_song.path.to_string(), &all_list)
+                            {
+                                self.current_song = item;
+                            }
                         }
                         break; // 保护，随机过多次
                     }
@@ -598,7 +647,12 @@ impl SilkPlayer {
     }
 
     pub fn start_play(&mut self) {
-        if self.play_list.all_list.is_empty() {
+        let all_list_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            all_list.is_empty()
+        } else {
+            true
+        };
+        if all_list_empty {
             self.clear_play();
             util::log_debug(format!("play list is empty"));
             return;
@@ -612,7 +666,7 @@ impl SilkPlayer {
         let music_info = &self.current_song;
         util::log(format!("now start {:?}", music_info.title));
         self.audio.start_play(&music_info.path, true);
-// 
+        //
         self.app_control.current_lyric_index = 0;
 
         self.current_song.time = self.audio.duration();

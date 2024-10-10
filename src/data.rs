@@ -78,13 +78,15 @@ impl PlayStatus {
 
 impl SilkPlayer {
     pub fn save_play_status(&self) {
-        PlayStatus::save(
-            &self.play_list.all_list,
-            &self.app_control.history_list,
-            &self.current_song,
-            self.audio.is_play(),
-            self.audio.position(),
-        );
+        if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            PlayStatus::save(
+                &all_list,
+                &self.app_control.history_list,
+                &self.current_song,
+                self.audio.is_play(),
+                self.audio.position(),
+            );
+        }
     }
 }
 
@@ -92,7 +94,7 @@ impl SilkPlayer {
 const DATA_PATH: &str = "data.json";
 /// 加载数据文件
 fn load_data() -> PlayStatus {
-    let data_dir = &format!("{}/data", util::current_dir());
+    let data_dir = &util::data_dir();
     if !util::file_exist(&data_dir) {
         if let Err(err) = std::fs::create_dir(data_dir) {
             util::log_err(format!("create data dir errolr: {}", err));
@@ -119,7 +121,7 @@ fn load_data() -> PlayStatus {
 }
 
 fn save_data(data: String) {
-    let data_dir = &format!("{}/data", util::current_dir());
+    let data_dir = &util::data_dir();
     if !util::file_exist(&data_dir) {
         if let Err(err) = std::fs::create_dir(data_dir) {
             util::log_err(format!("save data;Create data dir errolr: {}", err));

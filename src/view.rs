@@ -1,4 +1,7 @@
-use std::time::Instant;
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use iced::{
     theme,
@@ -20,15 +23,24 @@ use crate::{
 
 const BOTTOM_STATUS_HEIGHT: f32 = 120.;
 
+#[derive(Debug, Default, PartialEq)]
+pub enum InitState {
+    #[default]
+    Loading,
+    // WaitRefresh,
+    InitDone,
+}
+
 pub struct PageInfo {
-    pub all_list: Vec<MusicInfo>,    // 保存全部的数据
-    pub filter_list: Vec<MusicInfo>, // 保存筛选数据
-    pub page_list: Vec<MusicInfo>,   // 保存展示数据
+    pub all_list: Arc<Mutex<Vec<MusicInfo>>>, // 保存全部的数据
+    pub filter_list: Vec<MusicInfo>,          // 保存筛选数据
+    pub page_list: Vec<MusicInfo>,            // 保存展示数据
     pub current: usize,
     pub total: usize,
     pub total_page: usize,
     pub size: usize, // 筛选字段
     pub search: String,
+    pub init_state: Arc<Mutex<InitState>>,
 }
 impl Default for PageInfo {
     fn default() -> Self {
@@ -41,6 +53,7 @@ impl Default for PageInfo {
             total_page: Default::default(),
             size: 10,
             search: Default::default(),
+            init_state: Default::default(),
         }
     }
 }
@@ -52,10 +65,79 @@ impl PageInfo {
             ..PageInfo::default()
         };
     }
+
+    // pub fn check_init_done(&mut self) -> bool {
+    //     if let Ok(mut state) = self.init_state.try_lock() {
+    //         if *state == InitState::WaitRefresh {
+    //             *state = InitState::InitDone;
+    //             util::log("init local file done.");
+    //             return true;
+    //         }
+    //         util::log("loading local file...")
+    //     }
+    //     return false;
+    // }
+
     pub fn init_list(&mut self, list: Vec<MusicInfo>) {
-        self.all_list = list;
+        if let Ok(mut all_list) = self.all_list.try_lock() {
+            *all_list = list;
+        }
         self.filter();
         self.page();
+    }
+
+    pub fn init_monitor(&mut self, monitor: &str) {
+        use std::thread;
+        use std::time::Duration;
+
+        let init_state = self.init_state.clone();
+        let all_list: Arc<Mutex<Vec<MusicInfo>>> = self.all_list.clone();
+        let monitor = monitor.to_string();
+        let _ = thread::spawn(move || {
+            let mut file_list = vec![];
+            if let Ok(_) = util::get_files(&monitor, &mut file_list) {
+                let file_len = file_list.len();
+                // 用多线程来处理，加快初始化速度
+                let task_num = if let Ok(task_num) = std::thread::available_parallelism() {
+                    task_num.try_into().unwrap_or(1)
+                } else {
+                    1
+                };
+                util::log(format!("local file len={};task_num={}", file_len, task_num));
+
+                let batch_list = util::batch_list(&file_list, task_num);
+
+                let counter = all_list.clone();
+                for index in 0..task_num {
+                    let counter = Arc::clone(&counter);
+                    let task = batch_list[index].clone();
+                    let _ = thread::spawn(move || {
+                        // for path in task {
+                        for path in task {
+                            let music_info = MusicInfo::new(&path);
+                            counter.lock().unwrap().push(music_info);
+                        }
+                    });
+                }
+
+                {
+                    let _ = std::thread::spawn(move || loop {
+                        thread::sleep(Duration::from_secs_f32(1.5));
+                        if let Ok(mut list) = Arc::clone(&counter).lock() {
+                            util::log(format!("loading len={}", list.len()));
+                            if list.len() == file_len {
+                                util::log(format!("final len={}", list.len()));
+                                list.sort_by(|a, b| a.title.cmp(&b.title));
+                                if let Ok(mut init_state) = init_state.try_lock() {
+                                    *init_state = InitState::InitDone;
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        });
     }
 
     pub fn page(&mut self) {
@@ -101,25 +183,37 @@ impl PageInfo {
     }
 
     pub fn filter(&mut self) {
-        self.total = self.all_list.len();
+        let all_list_len = if let Ok(all_list) = self.all_list.try_lock() {
+            all_list.len()
+        } else {
+            0
+        };
+
+        self.total = all_list_len;
         if self.total <= 0 {
-            self.clear();
+            // self.clear(); // todo
             return;
         }
 
         self.filter_list = if self.search.is_empty() {
-            self.all_list.clone()
+            if let Ok(all_list) = self.all_list.try_lock() {
+                all_list.clone()
+            } else {
+                vec![]
+            }
         } else {
             let search = self.search.to_lowercase();
             let mut result = vec![];
-            for item in &self.all_list {
-                if item.title.to_lowercase().contains(&search) {
-                    result.push(item.clone());
-                    continue;
-                }
-                if item.artist.to_lowercase().contains(&search) {
-                    result.push(item.clone());
-                    continue;
+            if let Ok(all_list) = self.all_list.try_lock() {
+                for item in all_list.iter() {
+                    if item.title.to_lowercase().contains(&search) {
+                        result.push(item.clone());
+                        continue;
+                    }
+                    if item.artist.to_lowercase().contains(&search) {
+                        result.push(item.clone());
+                        continue;
+                    }
                 }
             }
             self.current = 1;
@@ -135,15 +229,19 @@ impl PageInfo {
 
     pub fn pos_current_song(&mut self, music_info: MusicInfo) -> usize {
         let mut index = 0;
-        for (i, item) in self.all_list.iter().enumerate() {
-            if item.path == music_info.path {
-                index = i;
-                break;
+        if let Ok(all_list) = self.all_list.try_lock() {
+            for (i, item) in all_list.iter().enumerate() {
+                if item.path == music_info.path {
+                    index = i;
+                    break;
+                }
+                if i == all_list.len() - 1 {
+                    // self.page();
+                    return 0;
+                }
             }
-            if i == self.all_list.len() - 1 {
-                self.page();
-                return 0;
-            }
+        } else {
+            return 0;
         }
 
         // index = 187 size = 10; page = ?
@@ -237,36 +335,59 @@ impl SilkPlayer {
                     iced::widget::tooltip::Position::Bottom,
                 );
 
-                let list: View =
-                    if !self.music_list.all_list.is_empty() && self.play_list.all_list.is_empty() {
-                        tooltip_text(
-                            button(text("go!").size(14.5))
-                                .on_press(Message::SongControl(SongControl::RandomSelect))
-                                .style(theme::Button::Custom(Box::new(
-                                    ButtonType::Primary.default(),
-                                ))),
-                            "随机听歌",
-                            iced::widget::tooltip::Position::Bottom,
-                        )
-                        .into()
-                    } else {
-                        tooltip_text(
-                            button_icon(
-                                "play_list",
-                                icon_size,
-                                Message::ChangeTab(Tab::List),
-                                style::ButtonType::Info.default(),
-                            ),
-                            "播放列表",
-                            iced::widget::tooltip::Position::Bottom,
-                        )
-                        .into()
-                    };
+                let all_list_empty = if let Ok(all_list) = self.music_list.all_list.try_lock() {
+                    all_list.is_empty()
+                } else {
+                    false
+                };
+                let play_list_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+                    all_list.is_empty()
+                } else {
+                    false
+                };
+
+                let list: View = if !all_list_empty && play_list_empty {
+                    tooltip_text(
+                        button(text("go!").size(14.5))
+                            .on_press(Message::SongControl(SongControl::RandomSelect))
+                            .style(theme::Button::Custom(Box::new(
+                                ButtonType::Primary.default(),
+                            ))),
+                        "随机听歌",
+                        iced::widget::tooltip::Position::Bottom,
+                    )
+                    .into()
+                } else {
+                    tooltip_text(
+                        button_icon(
+                            "play_list",
+                            icon_size,
+                            Message::ChangeTab(Tab::List),
+                            style::ButtonType::Info.default(),
+                        ),
+                        "播放列表",
+                        iced::widget::tooltip::Position::Bottom,
+                    )
+                    .into()
+                };
+
+                let like: View = tooltip_text(
+                    button_icon(
+                        "like",
+                        icon_size,
+                        Message::ChangeTab(Tab::Like),
+                        style::ButtonType::Info.default(),
+                    ),
+                    "歌单",
+                    iced::widget::tooltip::Position::Bottom,
+                )
+                .into();
 
                 control = control.push(search);
                 control = control.push(page_control);
                 control = control.push(play_all);
                 control = control.push(list);
+                control = control.push(like);
                 control = control.push(setting);
             }
             Tab::Fave => {}
@@ -295,6 +416,47 @@ impl SilkPlayer {
                 control = control.push(remove_all);
                 control = control.push(pos_current_song);
                 control = control.push(page_control);
+            }
+            Tab::Like | Tab::LikeDetail => {
+                let play_all = button(style::icon("play_all", icon_size))
+                    .style(theme::Button::Custom(Box::new(
+                        style::ButtonType::Primary.default(),
+                    )))
+                    .on_press(Message::SongControl(SongControl::PlayAll));
+                let play_all = components::tooltip_text(
+                    play_all,
+                    "播放全部",
+                    iced::widget::tooltip::Position::Bottom,
+                );
+
+                let play_list: View = tooltip_text(
+                    button_icon(
+                        "play_list",
+                        icon_size,
+                        Message::ChangeTab(Tab::List),
+                        style::ButtonType::Info.default(),
+                    ),
+                    "播放列表",
+                    iced::widget::tooltip::Position::Bottom,
+                )
+                .into();
+
+                let like: View = tooltip_text(
+                    button_icon(
+                        "like",
+                        icon_size,
+                        Message::ChangeTab(Tab::Like),
+                        style::ButtonType::Info.default(),
+                    ),
+                    "歌单",
+                    iced::widget::tooltip::Position::Bottom,
+                )
+                .into();
+
+                control = control.push(play_all);
+                control = control.push(play_list);
+                control = control.push(like);
+
             }
             Tab::Option => {}
         }
@@ -478,6 +640,8 @@ impl SilkPlayer {
             Tab::Home => self.home_view(),
             Tab::Fave => Text::new("Fave").into(),
             Tab::List => self.list_view(),
+            Tab::Like => self.like_view(),
+            Tab::LikeDetail => self.like_detail_view(),
             Tab::Option => self.option_view(),
         };
 
@@ -492,29 +656,41 @@ impl SilkPlayer {
             .into()
     }
 
+    fn pack_album(&self, music_info: &MusicInfo) -> View {
+        let album_size = 64.0;
+        let thumbnail_path = util::get_thumbnail_path(&music_info.album_path);
+        Image::new(&thumbnail_path)
+            .height(album_size)
+            .width(album_size)
+            .into()
+    }
+    fn pack_music_info_list(&self, music_info: &MusicInfo, with_album: bool) -> View {
+        let content = if with_album {
+            row![
+                self.pack_album(music_info),
+                self.show_name(false, music_info)
+            ]
+            .spacing(20)
+            .align_items(Alignment::Center)
+            .into()
+        } else {
+            self.show_name(false, music_info)
+        };
+
+        // row
+        button(content)
+            // .width(Length::Fill)
+            .on_press(Message::SongControl(SongControl::First(music_info.clone())))
+            .style(theme::Button::Custom(Box::new(
+                style::ButtonType::Text.default(),
+            )))
+            .into()
+    }
+
     pub fn home_view(&self) -> View {
         let mut list = column!().spacing(15);
         for music_info in &self.music_list.page_list {
-            let show_name = self.show_name(false, music_info);
-            let album_size = 64.0;
-            let thumbnail_path = util::get_thumbnail_path(&music_info.album_path);
-            let album = Image::new(&thumbnail_path)
-                .height(album_size)
-                .width(album_size);
-
-            let row = row![album, show_name]
-                .spacing(20)
-                .align_items(Alignment::Center);
-
-            list = list.push(
-                // row
-                button(row)
-                    // .width(Length::Fill)
-                    .on_press(Message::SongControl(SongControl::First(music_info.clone())))
-                    .style(theme::Button::Custom(Box::new(
-                        style::ButtonType::Text.default(),
-                    ))),
-            );
+            list = list.push(self.pack_music_info_list(music_info, true));
         }
 
         container(Scrollable::new(list).width(Length::Fill))
@@ -523,14 +699,25 @@ impl SilkPlayer {
     }
 
     pub fn list_view(&self) -> View {
-        if self.music_list.all_list.is_empty() {
+        let all_list_empty = if let Ok(all_list) = self.music_list.all_list.try_lock() {
+            all_list.is_empty()
+        } else {
+            false
+        };
+        let play_list_empty = if let Ok(all_list) = self.play_list.all_list.try_lock() {
+            all_list.is_empty()
+        } else {
+            false
+        };
+
+        if all_list_empty {
             container("播放列表为空，先去设置一下本地路径吧~")
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x()
                 .center_y()
                 .into()
-        } else if self.play_list.all_list.is_empty() {
+        } else if play_list_empty {
             container(
                 column!(
                     "播放列表为空，开启随机听歌？",
@@ -547,16 +734,7 @@ impl SilkPlayer {
         } else {
             let mut list = column!().spacing(15);
             for music_info in &self.play_list.page_list {
-                let show_name = self.show_name(true, music_info);
-
-                list = list.push(
-                    button(show_name)
-                        // .width(Length::Fill)
-                        .on_press(Message::SongControl(SongControl::List(music_info.clone())))
-                        .style(theme::Button::Custom(Box::new(
-                            style::ButtonType::Text.default(),
-                        ))),
-                );
+                list = list.push(self.pack_music_info_list(music_info, false));
             }
 
             container(
@@ -567,6 +745,80 @@ impl SilkPlayer {
             .padding(style::padding_left(50.0))
             .into()
         }
+    }
+
+    pub fn like_view(&self) -> View {
+        let mut tags = vec![];
+        let mut tag_names = vec![];
+        if let Ok(all_list) = self.music_list.all_list.try_lock() {
+            for music_info in all_list.iter() {
+                for tag in music_info.tags.iter() {
+                    if tag_names.contains(&tag.path) {
+                        continue;
+                    }
+                    tag_names.push(tag.path.clone());
+                    if !tags.contains(tag) {
+                        tags.push(tag.clone());
+                    }
+                }
+            }
+        }
+
+        // let icon_size = 18.0;
+        tags.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut list = column!().spacing(15);
+        for tag in tags {
+            let show_name = column!(text(&tag.name).size(22)).spacing(5);
+
+            list = list.push(button(show_name).on_press(Message::ChangeTag(tag)).style(
+                theme::Button::Custom(Box::new(style::ButtonType::Text.default())),
+            ));
+        }
+        container(
+            Scrollable::new(list)
+                .width(Length::Fill)
+                .id(PLAY_LIST_SCROLLABLE_ID.clone()),
+        )
+        .padding(style::padding_left(50.0))
+        .into()
+    }
+
+    pub fn get_list_by_tag(&self) -> Vec<MusicInfo> {
+        let mut list = vec![];
+        // let mut list = column!(detail).spacing(15);
+        if let Ok(all_list) = self.music_list.all_list.try_lock() {
+            for music_info in all_list.iter() {
+                let tag_names: Vec<_> = music_info
+                    .tags
+                    .iter()
+                    .filter(|item| item.name.eq(&self.tag.name))
+                    .collect();
+                if tag_names.is_empty() {
+                    continue;
+                }
+                list.push(music_info.clone());
+            }
+        }
+        list
+    }
+
+    pub fn like_detail_view(&self) -> View {
+        let list = self.get_list_by_tag();
+        let info = column!(text(&self.tag.name), text(&self.tag.path).size(16)).spacing(15);
+        let detail: View = if !list.is_empty() {
+            row!(self.pack_album(&list[0]), info).spacing(15).into()
+        } else {
+            info.into()
+        };
+
+        let mut show_list = column!(detail).spacing(15);
+        for music_info in list {
+            show_list = show_list.push(self.pack_music_info_list(&music_info, false));
+        }
+
+        container(Scrollable::new(show_list).width(Length::Fill))
+            .padding(style::padding_left(50.0))
+            .into()
     }
 
     fn show_name(&self, is_play_list: bool, music_info: &MusicInfo) -> View {

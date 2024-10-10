@@ -63,15 +63,13 @@ impl SilkPlayer {
         let is_ctrl = modifiers == Modifiers::CTRL;
 
         if let Key::Character(key) = key {
-            match self.status {
-                Status::Tab => match key {
-                    "a" => Some(Message::PlayDetail),
-                    _ => None,
-                },
-                Status::PlayDetial => match key {
-                    "a" => Some(Message::PlayDetail),
-                    _ => None,
-                },
+            match key {
+                "a" => Some(Message::PlayDetail),
+                "f" => Some(Message::ChangeTab(Tab::Like)),
+                "l" => Some(Message::ChangeTab(Tab::List)),
+                "s" => Some(Message::ChangeTab(Tab::Option)),
+                "h" => Some(Message::ChangeTab(Tab::Home)),
+                _ => None
             }
         } else if let Key::Named(n) = key {
             match n {

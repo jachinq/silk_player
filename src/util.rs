@@ -34,6 +34,16 @@ pub fn current_dir() -> String {
     }
 }
 
+pub fn data_dir() -> String {
+    format!("{}/data", current_dir())
+}
+pub fn cache_dir() -> String {
+    format!("{}/cache", data_dir())
+}
+pub fn log_dir() -> String {
+    format!("{}/log", data_dir())
+}
+
 /// 将图片转为窗口图标
 pub fn app_icon() -> Option<icon::Icon> {
     match image::load_from_memory(ICON) {
@@ -129,7 +139,7 @@ fn get_empty_dir(dir: &Path, dir_list: &mut Vec<String>) -> io::Result<()> {
 }
 
 //遍历dir目录，找出空目录（内部无文件，无目录）
-pub fn get_files(dir: &String, file_list: &mut Vec<String>) -> io::Result<()> {
+pub fn get_files(dir: &str, file_list: &mut Vec<String>) -> io::Result<()> {
     let dir = path::Path::new(dir);
     if !dir.is_dir() {
         return Ok(());
@@ -168,7 +178,7 @@ pub fn log_time(arg: impl Debug) {
     println!("{} {:?}", time.format("%m-%d %H:%M:%S%.3f"), arg);
 }
 pub fn log(arg: impl Debug) {
-    do_log("info", arg);
+    do_log("infos", arg);
 }
 pub fn log_debug(arg: impl Debug) {
     do_log("debug", arg);
@@ -192,7 +202,7 @@ fn do_log(level: &str, arg: impl Debug) {
 
     let fmt = "%Y-%m";
     let now = Local::now().format(fmt);
-    let path = format!("{}/log/{}.txt", current_dir(), now);
+    let path = format!("{}/{}.txt", log_dir(), now);
     if !file_exist(&path) {
         let _create = std::fs::File::create(&path);
     }
@@ -411,7 +421,8 @@ pub fn get_album_path_by_tag(tag: &MusicTag) -> String {
         };
 
         let fmt = &format.to_mime_type().replace("image/", "");
-        let path = format!("{}/cache/{}.{}", current_dir(), album, fmt);
+        let file_path = format!("{}.{}", album, fmt);
+        let path = format!("{}/{}", cache_dir(), file_path);
         album = path.to_string();
     } else {
         album = format!("{}/assets/default.png", current_dir());
@@ -522,6 +533,7 @@ fn do_extract_album_color(file_path: String, thumbnail: DynamicImage) {
             std::cmp::Ordering::Less
         }
     });
+    // top.sort_by(|a, b| a.1.cmp(b.1));
     let mut colors = Vec::with_capacity(8);
     for (i, item) in top.iter().enumerate() {
         if i >= 8 {

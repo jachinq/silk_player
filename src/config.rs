@@ -2,8 +2,7 @@ use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 
 use iced::{
-    widget::{button, checkbox, column, pick_list, radio, row, text_input},
-    window, Alignment, Command, Theme,
+    widget::{button, checkbox, column, pick_list, radio, row, text, text_input, Scrollable}, window, Alignment, Command, Length, Theme
 };
 
 use crate::{util, Message, PlayMode, SilkPlayer, View};
@@ -24,8 +23,7 @@ impl ConfigMessage {
     pub fn change(&self, app: &mut SilkPlayer) -> Command<Message> {
         match self {
             ConfigMessage::SelectMonitor => {
-                if let Some(a) = FileDialog::new().pick_folder()
-                {
+                if let Some(a) = FileDialog::new().pick_folder() {
                     // app.setting.monitor = a;
                     app.setting.monitor = a.as_path().as_os_str().to_str().unwrap().to_string();
                 }
@@ -395,11 +393,34 @@ impl SilkPlayer {
         )
         .spacing(5);
 
+        let key = column!(
+            "",
+            "快捷键",
+            form_item("Esc ------ ", text("返回上一个界面/退出应用").into()),
+            form_item("a ------ ", text("进入/退出播放页").into()),
+            form_item("s ------ ", text("进入设置页").into()),
+            form_item("f ------ ", text("进入歌单页").into()),
+            form_item("h ------ ", text("进入主页").into()),
+            form_item("l ------ ", text("进入播放列表页").into()),
+            form_item("space ------ ", text("播放/暂停").into()),
+            form_item("Ctrl+up/down ------ ", text("音量增加/减小").into()),
+            form_item("Ctrl+left/right ------ ", text("上一首/下一首").into()),
+            "",
+            "全局快捷键",
+            form_item("Ctrl+num8/num2 ------ ", text("音量增加/减小").into()),
+            form_item("Ctrl+num4/num6 ------ ", text("上一首/下一首").into()),
+            form_item("Ctrl+num5 ------ ", text("暂停/播放").into()),
+        )
+        .spacing(5);
+
         // column!("常规设置", monitor, theme, wim_mode, desktop_lyric)
-        column!(general, desktop_lyric)
-            .padding([10, 50])
-            .spacing(gap)
-            .into()
+        Scrollable::new(
+            column!(general, desktop_lyric, key)
+                .padding([10, 50])
+                .spacing(gap),
+        )
+        .width(Length::Fill)
+        .into()
     }
 }
 
@@ -412,7 +433,7 @@ fn form_item<'a>(label: &'a str, content: View<'a>) -> View<'a> {
 
 /// 加载配置文件
 fn load_config() -> Setting {
-    let data_dir = &format!("{}/data", util::current_dir());
+    let data_dir = &util::data_dir();
     if !util::file_exist(&data_dir) {
         if let Err(err) = std::fs::create_dir(data_dir) {
             util::log_err(format!("create data dir errolr: {}", err));
@@ -439,7 +460,7 @@ fn load_config() -> Setting {
 }
 
 fn save_config(data: String) {
-    let data_dir = &format!("{}/data", util::current_dir());
+    let data_dir = &util::data_dir();
     if !util::file_exist(&data_dir) {
         if let Err(err) = std::fs::create_dir(data_dir) {
             util::log_err(format!("save config;Create data dir errolr: {}", err));
