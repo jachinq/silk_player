@@ -12,8 +12,6 @@ mod style;
 mod util;
 mod view;
 
-// use std::process::exit;
-
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -34,6 +32,7 @@ use iced::{
     Command, Event, Font, Length, Pixels, Settings, Size, Subscription, Theme,
 };
 use util::{log, log_err};
+#[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
     GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS,
 };
@@ -55,13 +54,16 @@ fn main() -> iced::Result {
     //     Err(e) => util::log_err(format!("set thread priority failed: {}", e)),
     // }
 
-    // 获取当前进程的句柄
-    let process = unsafe { GetCurrentProcess() };
+    #[cfg(target_os = "windows")]
+    {    
+        // 获取当前进程的句柄
+        let process = unsafe { GetCurrentProcess() };
 
-    // 设置进程的优先级为高于普通的优先级
-    match unsafe { SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) } {
-        Ok(_) => log("set process priority success: AboveNormal"),
-        Err(e) => log_err(format!("set process priority failed: {}", e)),
+        // 设置进程的优先级为高于普通的优先级
+        match unsafe { SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) } {
+            Ok(_) => log("set process priority success: AboveNormal"),
+            Err(e) => log_err(format!("set process priority failed: {}", e)),
+        }
     }
 
     // 创建数据存放路径
