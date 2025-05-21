@@ -23,13 +23,7 @@ use config::{ConfigMessage, Setting};
 
 use data::PlayStatus;
 use iced::{
-    event, executor,
-    futures::lock::Mutex,
-    keyboard::Modifiers,
-    multi_window::Application,
-    widget::{column, container, scrollable},
-    window::{self, settings::PlatformSpecific, Level, Position},
-    Command, Event, Font, Length, Pixels, Settings, Size, Subscription, Theme,
+    event, executor, futures::lock::Mutex, keyboard::Modifiers, multi_window::Application, widget::{column, container, scrollable}, window::{self, settings::PlatformSpecific, Level, Position}, Command, Event, Font, Length, Pixels, Settings, Size, Subscription, Theme
 };
 use util::{log, log_err};
 #[cfg(target_os = "windows")]
@@ -77,6 +71,9 @@ fn main() -> iced::Result {
     let xqfont: Font = Font::with_name("霞鹜文楷 GB 屏幕阅读版 R");
     // let xqfont: Font = Font::with_name("Maple Mono NF CN");
 
+    
+    let min_width = 800.0;
+    let min_height = 580.0;
     let windows = Setting::default().windows;
 
     let run = SilkPlayer::run(Settings {
@@ -84,7 +81,7 @@ fn main() -> iced::Result {
         window: window::Settings {
             size: Size::new(windows.width, windows.height),
             position: Position::Centered,
-            min_size: None,
+            min_size: Some(Size::new(min_width, min_height)),
             max_size: None,
             visible: true,
             resizable: true,
@@ -117,9 +114,11 @@ pub enum Tab {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    EventOccurred(Event),
+    EventOccurred(Event), // 订阅 iced 的事件转发给 handle_event 处理
     UpdateTime(Instant),
     ScrollLyric(scrollable::Viewport),
+
+    MoveWindow(bool), // 是否开始移动窗口
 
     ChangeTab(Tab),
     ChangeTag(Tag),
@@ -233,6 +232,11 @@ impl Application for SilkPlayer {
                 }
                 self.tab = tab;
             }
+            Message::MoveWindow(start) => {
+                if start { // 移动窗口
+                    return window::drag(window::Id::MAIN);
+                }
+            }
             Message::ChangeTag(tag) => {
                 self.tag = tag;
                 return self.update(Message::ChangeTab(Tab::LikeDetail));
@@ -345,6 +349,7 @@ impl Application for SilkPlayer {
         let every = iced::time::every(std::time::Duration::from_secs_f32(UPDATE_TIME))
             .map(|v| Message::UpdateTime(v));
 
+        // 把系统事件转给 EventOccurred 消息进行处理
         let map = event::listen().map(Message::EventOccurred);
 
         Subscription::batch([

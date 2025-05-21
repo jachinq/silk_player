@@ -4,12 +4,9 @@ use std::{
 };
 
 use iced::{
-    theme,
-    widget::{
-        button, column, container, row, scrollable, text, text_input, Column, Image, Scrollable,
-        Slider, Text,
-    },
-    Alignment, Command, Length,
+    theme, widget::{
+        button, column, container, row, scrollable, text, text_input, Column, Image, MouseArea, Scrollable, Slider, Text
+    }, Alignment, Command, Length
 };
 // use iced_aw::FloatingElement;
 
@@ -287,17 +284,17 @@ impl SilkPlayer {
     pub fn top_status_view(&self) -> View {
         let page_control = self.page_control();
 
-        let home = button(
-            row!(
-                Image::new(format!("{}/assets/icon.ico", util::current_dir())).width(32.),
-                text("Silk 播放器")
-            )
-            .spacing(5),
-        )
-        .on_press(Message::ChangeTab(Tab::Home))
-        .style(theme::Button::Custom(Box::new(
-            style::ButtonType::Text.default(),
-        )));
+        let logo = MouseArea::new(Image::new(format!("{}/assets/icon.ico", util::current_dir())).width(32.)).on_press(Message::MoveWindow(true)).on_release(Message::MoveWindow(false));
+
+        // let logo =
+            // button(Image::new(format!("{}/assets/icon.ico", util::current_dir())).width(32.)).on_press(Message::MoveWindow(window::Id::MAIN));
+
+        let home = row!(logo, button(text("Silk 播放器")).on_press(Message::ChangeTab(Tab::Home))
+            .style(theme::Button::Custom(Box::new(
+                style::ButtonType::Text.default(),
+            )))).spacing(5)
+            .align_items(Alignment::Center)
+            ;
 
         let icon_size = 18.0;
 
@@ -456,7 +453,6 @@ impl SilkPlayer {
                 control = control.push(play_all);
                 control = control.push(play_list);
                 control = control.push(like);
-
             }
             Tab::Option => {}
         }
